@@ -3,7 +3,7 @@
 import { Bot, Context, InlineKeyboard, InputFile, Keyboard, webhookCallback } from "npm:grammy@1.30.0";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-const VERSION = "v7";
+const VERSION = "v8";
 
 /* ============================ config ============================ */
 const env = (k: string, d = "") => Deno.env.get(k) ?? d;
@@ -125,8 +125,13 @@ const mainKb = new Keyboard().text("🛒 Заказать").resized().persistent
 
 /* ============================ товары: оформление поста ============================ */
 const postCaption = (p: any) =>
-  `<b>${esc(titleOf(p))}</b>\n\n💰 Цена: <b>${money(p.price)} сум</b>\n⏱ Срок: ${p.term_days} дн.`;
+  `<b>${esc(titleOf(p))}</b>\n\n💰 Цена: <b>${money(p.price)} сум</b>\n⏱ Срок выполнения: ${p.term_days} дн.`;
 const deepLink = (id: number) => `https://t.me/${BOT_USERNAME}?start=m_${id}`;
+// ссылка на пост в канале (а не на бота)
+const postUrl = (msgId: number) =>
+  CHANNEL.startsWith("@")
+    ? `https://t.me/${CHANNEL.slice(1)}/${msgId}`
+    : `https://t.me/c/${CHANNEL.replace(/^-100/, "")}/${msgId}`;
 const postKb = (id: number) => new InlineKeyboard().url("🛒 Заказать", deepLink(id));
 
 async function publishProduct(id: number) {
@@ -160,7 +165,7 @@ function card(o: any) {
     `👤 ${esc(o.client_name)}${o.username ? ` (@${esc(o.username)})` : ""} · ${esc(o.phone)}`,
     `📦 ${esc(o.model_title ?? "Свой вариант")}${o.custom_note ? `\n📝 ${esc(o.custom_note)}` : ""}`,
     o.price
-      ? `💰 ${money(o.price)} сум · предоплата ${money(o.prepay)} · срок ${o.term_days} дн.`
+      ? `💰 ${money(o.price)} сум · предоплата ${money(o.prepay)} · срок выполнения ${o.term_days} дн.`
       : "💰 цена не назначена",
     `📍 ${regionLabel(o)}: ${esc(o.address)}`,
     o.pay_method ? `💳 ${o.pay_method === "click" ? "Click (авто)" : "Карта (проверить чек)"}` : null,
@@ -192,7 +197,7 @@ async function ensureTopic(o: any) {
     parse_mode: "HTML", message_thread_id: tid, reply_markup: adminKb(o),
   });
   const hint = o.status === "await_price"
-    ? "Назначьте цену командой: <code>/price 450000 5</code> (сумма, срок в днях).\n"
+    ? "Назначьте цену командой: <code>/price 450000 5</code> (сумма, срок выполнения в днях).\n"
     : "";
   await bot.api.sendMessage(ADMIN_GROUP,
     `${hint}Сообщения в этой теме уходят клиенту. Начните сообщение с точки, чтобы оставить заметку только для своих.`,
@@ -230,7 +235,7 @@ async function sendPaymentOffer(o: any) {
   await bot.api.sendMessage(o.user_id, [
     `<b>Заказ #${o.id}</b> · ${esc(o.model_title ?? "Свой вариант")}`,
     `💰 Цена: ${money(o.price)} сум`,
-    `⏱ Срок работы: ${o.term_days} дн.`,
+    `⏱ Срок выполнения: ${o.term_days} дн.`,
     `📅 Ближайший старт: ${dRu(start)} <i>(фиксируется после предоплаты)</i>`,
     `💳 Предоплата ${PREPAY}%: <b>${money(o.prepay)} сум</b>`,
     `🚚 Доставка оплачивается отдельно`,
@@ -322,7 +327,7 @@ async function slides() {
   return (data ?? []).flatMap((p: any) => p.photos.map((f: string, i: number) => ({ p, f, i, n: p.photos.length })));
 }
 const slideCap = (s: any) =>
-  `<b>${esc(titleOf(s.p))}</b>${s.n > 1 ? ` · фото ${s.i + 1}/${s.n}` : ""}\n\n💰 ${money(s.p.price)} сум\n⏱ Срок: ${s.p.term_days} дн.`;
+  `<b>${esc(titleOf(s.p))}</b>${s.n > 1 ? ` · фото ${s.i + 1}/${s.n}` : ""}\n\n💰 ${money(s.p.price)} сум\n⏱ Срок выполнения: ${s.p.term_days} дн.`;
 const slideKb = (i: number, total: number, s: any) =>
   new InlineKeyboard()
     .text("◀", `cat:${(i - 1 + total) % total}`).text(`${i + 1} / ${total}`, "noop").text("▶", `cat:${(i + 1) % total}`)
@@ -365,7 +370,7 @@ bot.callbackQuery(/^pick:(\d+)$/, async (ctx) => {
   const start = await nextStart();
   await setS(ctx, { step: "choose_region", data: { productId: p.id } });
   await ctx.reply(
-    `<b>${esc(titleOf(p))}</b>\n💰 Цена: ${money(p.price)} сум\n⏱ Срок работы: ${p.term_days} дн.\n📅 Ближайшая дата начала: ${dRu(start)}\n<i>Дата закрепляется после предоплаты.</i>`,
+    `<b>${esc(titleOf(p))}</b>\n💰 Цена: ${money(p.price)} сум\n⏱ Срок выполнения: ${p.term_days} дн.\n📅 Ближайшая дата начала: ${dRu(start)}\n<i>Дата закрепляется после предоплаты.</i>`,
     { parse_mode: "HTML", reply_markup: new InlineKeyboard().text("Продолжить", "region").text("Назад", "catalog") });
 });
 
@@ -453,7 +458,7 @@ async function finalize(ctx: Context, s: S) {
     const { data: o } = await db.from("orders").insert({
       ...base, custom: true, custom_photo: d.photo, custom_note: d.note ?? null, status: "await_price",
     }).select().single();
-    await ctx.reply(`Заявка #${o.id} принята. Менеджер оценит работу и напишет цену и срок прямо здесь.`, { reply_markup: mainKb });
+    await ctx.reply(`Заявка #${o.id} принята. Менеджер оценит работу и напишет цену и срок выполнения прямо здесь.`, { reply_markup: mainKb });
     await ensureTopic(o);
     return;
   }
@@ -582,7 +587,7 @@ bot.command("price", async (ctx) => {
   const [pr, days] = String(ctx.match).trim().split(/\s+/);
   const price = num(pr ?? "");
   const term = days ? num(days) : o.term_days;
-  if (!price || !term) return ctx.reply("Формат: /price 450000 5 (сумма и срок в днях)");
+  if (!price || !term) return ctx.reply("Формат: /price 450000 5 (сумма и срок выполнения в днях)");
   const { data: o2 } = await db.from("orders").update({
     price, prepay: Math.round((price * PREPAY) / 100), term_days: term, status: "await_payment",
     expires_at: new Date(Date.now() + 24 * 3600e3).toISOString(), reminders: 0,
@@ -633,6 +638,25 @@ bot.command(["hide", "show"], async (ctx) => {
   await ctx.reply(hide ? "Модель скрыта из каталога." : "Модель снова доступна.");
 });
 
+// <album>
+// Фото альбома приходят отдельными сообщениями с общим media_group_id.
+// Каждое фото пишем отдельной строкой; тот, кто первым занял замок, ждёт остальные и собирает все фото.
+async function collectAlbum(gid: string, mid: number, fid: string, waitMs = 3000): Promise<string[] | null> {
+  const r1 = await db.from("sessions").insert({ key: `mg:${gid}:${String(mid).padStart(12, "0")}`, data: { f: fid } });
+  if (r1.error) throw new Error(r1.error.message);
+  const lock = await db.from("sessions").insert({ key: `mgl:${gid}`, data: {} });
+  if (lock.error) {
+    if (lock.error.code === "23505") return null;
+    throw new Error(lock.error.message);
+  }
+  await new Promise((r) => setTimeout(r, waitMs));
+  const { data } = await db.from("sessions").select("key,data").like("key", `mg:${gid}:%`).order("key");
+  await db.from("sessions").delete().like("key", `mg:${gid}:%`);
+  await db.from("sessions").delete().eq("key", `mgl:${gid}`);
+  return (data ?? []).map((r: any) => r.data.f);
+}
+// </album>
+
 async function startDraft(ctx: Context, productId: number, thread?: number) {
   await setS(ctx, { step: "p_price", data: { productId, thread: thread ?? tidOf(ctx) } });
 }
@@ -643,15 +667,14 @@ async function productsTopic(ctx: Context) {
     return ctx.reply("Пришлите изображение как фото (со сжатием), а не как файл.");
   }
   if (m.photo) {
-    const { data, error } = await db.rpc("add_draft_photo", {
-      p_group: m.media_group_id ?? null, p_file: m.photo.at(-1).file_id, p_admin: ctx.from!.id,
-    });
-    if (error) return ctx.reply(`⚠️ Ошибка базы: ${error.message}. Проверьте, что выполнен 001_init.sql.`);
-    const row = Array.isArray(data) ? data[0] : data;
-    if (row?.created) {
-      await startDraft(ctx, row.id);
-      await ctx.reply("📸 Фото получено (если это альбом, остальные добавятся сами).\nЦена в сумах? Напишите число.");
-    }
+    const fid = m.photo.at(-1).file_id;
+    let photos: string[] | null = [fid];
+    if (m.media_group_id) photos = await collectAlbum(String(m.media_group_id), m.message_id, fid);
+    if (!photos) return; // остальные фото альбома соберёт первый обработчик
+    const { data: prod, error } = await db.from("products").insert({ photos, created_by: ctx.from!.id }).select("id").single();
+    if (error) return ctx.reply(`⚠️ Ошибка базы: ${error.message}`);
+    await startDraft(ctx, prod.id);
+    await ctx.reply(`📸 Фото получено: ${photos.length} шт.\nЦена в сумах? Напишите число.`);
     return;
   }
   const s = await getS(ctx);
@@ -667,7 +690,7 @@ async function productsTopic(ctx: Context) {
   }
   if (s.step === "p_term") {
     const n = num(t);
-    if (!n) return ctx.reply("Введите срок числом, например 5");
+    if (!n) return ctx.reply("Введите срок выполнения числом, например 5");
     return setTerm(ctx, s, n);
   }
   if (s.step === "p_title") {
@@ -685,7 +708,7 @@ async function productsTopic(ctx: Context) {
 }
 
 const askTerm = (ctx: Context) =>
-  ctx.reply("Срок работы, дней? Выберите или напишите число.", {
+  ctx.reply("Срок выполнения, дней? Выберите или напишите число.", {
     reply_markup: new InlineKeyboard().text("3", "pt:3").text("5", "pt:5").text("7", "pt:7").text("10", "pt:10"),
   });
 async function setTerm(ctx: Context, s: S, n: number) {
@@ -763,8 +786,9 @@ bot.callbackQuery(/^pc:(ok|cancel):(\d+)$/, async (ctx) => {
     return ctx.reply("Черновик удалён.");
   }
   if (!p.publish_at || new Date(p.publish_at).getTime() <= Date.now() + 60e3) {
+    let posted: any;
     try {
-      await publishProduct(id);
+      posted = await publishProduct(id);
     } catch (e) {
       const why = String((e as any)?.description ?? (e as any)?.message ?? e);
       return ctx.reply(
@@ -773,7 +797,7 @@ bot.callbackQuery(/^pc:(ok|cancel):(\d+)$/, async (ctx) => {
     }
     await closeButtons();
     await clearS(ctx);
-    return ctx.reply(`✅ Опубликовано в канале. Ссылка: ${deepLink(id)}`);
+    return ctx.reply(`✅ Опубликовано в канале: ${posted ? postUrl(posted.message_id) : ""}`);
   }
   await closeButtons();
   await clearS(ctx);
@@ -796,8 +820,8 @@ bot.callbackQuery(/^i2p:(\d+)$/, async (ctx) => {
   if (!inAdmin(ctx)) return;
   const { data: idea } = await db.from("ideas").select("*").eq("id", ctx.match[1]).single();
   if (!idea || idea.status !== "new" || !idea.file_id) return ctx.answerCallbackQuery({ text: "Уже перенесено" });
-  const { data } = await db.rpc("add_draft_photo", { p_group: null, p_file: idea.file_id, p_admin: ctx.from.id });
-  const row = Array.isArray(data) ? data[0] : data;
+  const { data: row, error } = await db.from("products").insert({ photos: [idea.file_id], created_by: ctx.from.id }).select("id").single();
+  if (error) return ctx.answerCallbackQuery({ text: "Ошибка базы" });
   await db.from("ideas").update({ status: "moved" }).eq("id", idea.id);
   await startDraft(ctx, row.id, Number(await getSet("products")) || undefined);
   await send("products", `📸 Идея #${idea.id} перенесена. Цена в сумах? Напишите число.`);
@@ -895,8 +919,8 @@ async function tick() {
   const { data: due } = await db.from("products").select("*").eq("status", "scheduled").lte("publish_at", now.toISOString());
   for (const p of due ?? []) {
     try {
-      await publishProduct(p.id);
-      await send("products", `✅ Опубликовано по расписанию: <b>${esc(titleOf(p))}</b>`);
+      const posted = await publishProduct(p.id);
+      await send("products", `✅ Опубликовано по расписанию: <b>${esc(titleOf(p))}</b>${posted ? `\n${postUrl(posted.message_id)}` : ""}`);
     } catch (e) { await send("products", `⚠️ Не удалось опубликовать #${p.id}: ${esc(String(e))}`); }
   }
   // 2. напоминание за 15 минут
@@ -926,6 +950,7 @@ async function tick() {
         `⏰ Заказ #${o.id} ждёт предоплаты ${money(o.prepay)} сум. Бронь действует до ${dtRu(o.expires_at)}.`).catch(() => {});
     }
   }
+  await db.from("sessions").delete().like("key", "mg%").lt("updated_at", new Date(now.getTime() - 3600e3).toISOString());
   // 4. утренняя сводка в тему «Всё»
   if (nowTz().getUTCHours() >= 9 && (await getSet("digest")) !== todayStr()) {
     await setSet("digest", todayStr());
