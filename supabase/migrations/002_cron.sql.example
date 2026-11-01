@@ -1,0 +1,17 @@
+-- Выполните в SQL Editor ПОСЛЕ деплоя функции.
+-- 1) Database -> Extensions: включите pg_cron и pg_net.
+-- 2) Подставьте PROJECT_REF и CRON_SECRET (тот же, что в секретах функции).
+
+select cron.schedule(
+  'bot-tick',
+  '* * * * *',
+  $$
+  select net.http_post(
+    url := 'https://jiwhwdlrdtwkmiznyikb.supabase.co/functions/v1/bot?task=tick',
+    headers := jsonb_build_object('x-cron-secret', '1octvohzpohssrehtom'),
+    timeout_milliseconds := 20000
+  );
+  $$
+);
+
+-- Отключить: select cron.unschedule('bot-tick');

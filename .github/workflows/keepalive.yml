@@ -1,0 +1,9 @@
+name: keepalive
+on:
+  schedule: [{ cron: "0 6 */3 * *" }]
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsS "https://${{ secrets.SUPABASE_PROJECT_REF }}.supabase.co/functions/v1/bot?task=ping"

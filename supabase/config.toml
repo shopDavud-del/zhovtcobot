@@ -1,0 +1,4 @@
+project_id = "shop-bot"
+
+[functions.bot]
+verify_jwt = false
