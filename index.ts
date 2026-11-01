@@ -33,15 +33,19 @@ bot.catch(async (e) => {
 // grammY не добавляет номер темы к ответам сам: без этого ответ уходит в «Общую».
 // Для сообщений из темы группы админов подставляем message_thread_id во все отправки.
 bot.use(async (ctx, next) => {
-  const msg: any = ctx.msg;
-  const tid = msg?.is_topic_message ? msg.message_thread_id : undefined;
-  if (tid && ctx.chat?.id === ADMIN_GROUP) {
-    ctx.api.config.use((prev, method, payload: any, signal) => {
-      if (/^(send|copy)/.test(method) && payload.chat_id === ADMIN_GROUP && payload.message_thread_id === undefined) {
-        payload = { ...payload, message_thread_id: tid };
-      }
-      return prev(method, payload, signal);
-    });
+  if (ctx.chat?.id === ADMIN_GROUP) {
+    const msg: any = ctx.msg;
+    let tid: number | undefined = msg?.message_thread_id;
+    // запасной вариант для кнопок: тема, запомненная при начале диалога
+    if (!tid && ctx.callbackQuery) tid = (await getS(ctx)).data?.thread;
+    if (tid) {
+      ctx.api.config.use((prev, method, payload: any, signal) => {
+        if (/^(send|copy)/.test(method) && payload.chat_id === ADMIN_GROUP && payload.message_thread_id === undefined) {
+          payload = { ...payload, message_thread_id: tid };
+        }
+        return prev(method, payload, signal);
+      });
+    }
   }
   await next();
 });
@@ -530,6 +534,12 @@ bot.command("debug", async (ctx) => {
     const cm: any = await bot.api.getChatMember(ctx.chat.id, me.id);
     st = `${cm.status}${cm.can_manage_topics ? ", управляет темами" : ""}`;
   } catch (_) { /* ignore */ }
+  let ch = "";
+  try {
+    const c: any = await bot.api.getChat(CHANNEL);
+    const cm: any = await bot.api.getChatMember(CHANNEL, me.id);
+    ch = `${esc(c.title)} · бот: ${cm.status}${cm.can_post_messages ? ", публиковать может ✅" : ", публиковать НЕЛЬЗЯ ❌"}`;
+  } catch (e) { ch = `ошибка: ${esc(String((e as any)?.description ?? e))}`; }
   const f = ctx.from!;
   await ctx.reply([
     `chat_id: <code>${ctx.chat.id}</code>`,
@@ -538,6 +548,7 @@ bot.command("debug", async (ctx) => {
     `привязано: products=${await getSet("products") ?? "—"}, ideas=${await getSet("ideas") ?? "—"}, archive=${await getSet("archive") ?? "—"}`,
     `отправитель: <code>${f.id}</code>${f.is_bot ? " (бот или анонимный админ)" : ""}`,
     `бот в чате: ${st}`,
+    `канал (CHANNEL_ID=<code>${esc(CHANNEL)}</code>): ${ch}`,
     `privacy mode: ${me.can_read_all_group_messages ? "выключен" : "включён (нужен админ-статус)"}`,
   ].join("\n"), { parse_mode: "HTML" });
 });
@@ -614,8 +625,8 @@ bot.command(["hide", "show"], async (ctx) => {
   await ctx.reply(hide ? "Модель скрыта из каталога." : "Модель снова доступна.");
 });
 
-async function startDraft(ctx: Context, productId: number) {
-  await setS(ctx, { step: "p_price", data: { productId } });
+async function startDraft(ctx: Context, productId: number, thread?: number) {
+  await setS(ctx, { step: "p_price", data: { productId, thread: thread ?? tidOf(ctx) } });
 }
 
 async function productsTopic(ctx: Context) {
@@ -736,16 +747,28 @@ bot.callbackQuery(/^pc:(ok|cancel):(\d+)$/, async (ctx) => {
   const id = Number(ctx.match[2]);
   const { data: p } = await db.from("products").select("*").eq("id", id).single();
   if (!p || p.status !== "draft") return ctx.reply("Эта публикация уже обработана.");
-  await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }).catch(() => {});
-  await clearS(ctx);
+  const closeButtons = () => ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard() }).catch(() => {});
   if (ctx.match[1] === "cancel") {
+    await closeButtons();
+    await clearS(ctx);
     await db.from("products").delete().eq("id", id);
     return ctx.reply("Черновик удалён.");
   }
   if (!p.publish_at || new Date(p.publish_at).getTime() <= Date.now() + 60e3) {
-    await publishProduct(id);
+    try {
+      await publishProduct(id);
+    } catch (e) {
+      const why = String((e as any)?.description ?? (e as any)?.message ?? e);
+      return ctx.reply(
+        `⚠️ Не удалось опубликовать в канале.\nПричина: <code>${esc(why)}</code>\n\nПроверьте: бот добавлен в канал админом с правом публикации; в секрете CHANNEL_ID стоит @имя (публичный канал) или число -100… (закрытый); после смены секрета нажат Deploy. Команда /debug покажет состояние канала. Затем нажмите «Опубликовать» ещё раз.`,
+        { parse_mode: "HTML" });
+    }
+    await closeButtons();
+    await clearS(ctx);
     return ctx.reply(`✅ Опубликовано в канале. Ссылка: ${deepLink(id)}`);
   }
+  await closeButtons();
+  await clearS(ctx);
   await db.from("products").update({ status: "scheduled" }).eq("id", id);
   return ctx.reply(`🗓 Запланировано на ${dtRu(p.publish_at)}. Очередь: /queue`);
 });
@@ -768,7 +791,7 @@ bot.callbackQuery(/^i2p:(\d+)$/, async (ctx) => {
   const { data } = await db.rpc("add_draft_photo", { p_group: null, p_file: idea.file_id, p_admin: ctx.from.id });
   const row = Array.isArray(data) ? data[0] : data;
   await db.from("ideas").update({ status: "moved" }).eq("id", idea.id);
-  await startDraft(ctx, row.id);
+  await startDraft(ctx, row.id, Number(await getSet("products")) || undefined);
   await send("products", `📸 Идея #${idea.id} перенесена. Цена в сумах? Напишите число.`);
   await ctx.answerCallbackQuery({ text: "Перенесено в «Товары»" });
 });
