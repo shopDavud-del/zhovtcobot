@@ -21,7 +21,30 @@ const db = createClient(env("SUPABASE_URL"), env("SUPABASE_SERVICE_ROLE_KEY"), {
   auth: { persistSession: false },
 });
 const bot = new Bot(env("BOT_TOKEN"));
-bot.catch((e) => console.error("bot error:", e.error));
+bot.catch(async (e) => {
+  console.error("bot error:", e.error);
+  try {
+    if (e.ctx.chat?.id === ADMIN_GROUP) {
+      await e.ctx.reply(`⚠️ Ошибка: ${String((e.error as any)?.message ?? e.error).slice(0, 300)}`);
+    }
+  } catch (_) { /* ignore */ }
+});
+
+// grammY не добавляет номер темы к ответам сам: без этого ответ уходит в «Общую».
+// Для сообщений из темы группы админов подставляем message_thread_id во все отправки.
+bot.use(async (ctx, next) => {
+  const msg: any = ctx.msg;
+  const tid = msg?.is_topic_message ? msg.message_thread_id : undefined;
+  if (tid && ctx.chat?.id === ADMIN_GROUP) {
+    ctx.api.config.use((prev, method, payload: any, signal) => {
+      if (/^(send|copy)/.test(method) && payload.chat_id === ADMIN_GROUP && payload.message_thread_id === undefined) {
+        payload = { ...payload, message_thread_id: tid };
+      }
+      return prev(method, payload, signal);
+    });
+  }
+  await next();
+});
 
 /* ============================ helpers ============================ */
 const esc = (s: any) =>
@@ -500,6 +523,25 @@ const tidOf = (ctx: Context) => (ctx.msg as any)?.message_thread_id as number | 
 const orderByTopic = async (tid?: number) =>
   tid ? (await db.from("orders").select("*").eq("topic_id", tid).maybeSingle()).data : null;
 
+bot.command("debug", async (ctx) => {
+  const me = await bot.api.getMe();
+  let st = "не удалось узнать";
+  try {
+    const cm: any = await bot.api.getChatMember(ctx.chat.id, me.id);
+    st = `${cm.status}${cm.can_manage_topics ? ", управляет темами" : ""}`;
+  } catch (_) { /* ignore */ }
+  const f = ctx.from!;
+  await ctx.reply([
+    `chat_id: <code>${ctx.chat.id}</code>`,
+    `ADMIN_GROUP_ID в секрете: <code>${ADMIN_GROUP}</code> → ${inAdmin(ctx) ? "совпадает ✅" : "НЕ совпадает ❌"}`,
+    `thread_id этой темы: <code>${tidOf(ctx) ?? "нет (общая тема)"}</code>`,
+    `привязано: products=${await getSet("products") ?? "—"}, ideas=${await getSet("ideas") ?? "—"}, archive=${await getSet("archive") ?? "—"}`,
+    `отправитель: <code>${f.id}</code>${f.is_bot ? " (бот или анонимный админ)" : ""}`,
+    `бот в чате: ${st}`,
+    `privacy mode: ${me.can_read_all_group_messages ? "выключен" : "включён (нужен админ-статус)"}`,
+  ].join("\n"), { parse_mode: "HTML" });
+});
+
 bot.command("bind", async (ctx) => {
   if (!inAdmin(ctx)) return;
   const key = String(ctx.match).trim();
@@ -578,10 +620,14 @@ async function startDraft(ctx: Context, productId: number) {
 
 async function productsTopic(ctx: Context) {
   const m: any = ctx.message;
+  if (m.document?.mime_type?.startsWith("image/")) {
+    return ctx.reply("Пришлите изображение как фото (со сжатием), а не как файл.");
+  }
   if (m.photo) {
-    const { data } = await db.rpc("add_draft_photo", {
+    const { data, error } = await db.rpc("add_draft_photo", {
       p_group: m.media_group_id ?? null, p_file: m.photo.at(-1).file_id, p_admin: ctx.from!.id,
     });
+    if (error) return ctx.reply(`⚠️ Ошибка базы: ${error.message}. Проверьте, что выполнен 001_init.sql.`);
     const row = Array.isArray(data) ? data[0] : data;
     if (row?.created) {
       await startDraft(ctx, row.id);
@@ -800,12 +846,15 @@ bot.callbackQuery(/^a:(\w+):(\d+)$/, async (ctx) => {
 /* ============================ маршрутизация сообщений ============================ */
 bot.on("message", async (ctx) => {
   if (ctx.chat.type === "private") return handlePrivate(ctx);
-  if (!inAdmin(ctx) || ctx.from?.is_bot) return;
+  if (!inAdmin(ctx) || (ctx.from?.is_bot && ctx.from.id !== 1087968824)) return;
   const tid = tidOf(ctx);
   if (tid && tid === Number(await getSet("products"))) return productsTopic(ctx);
   if (tid && tid === Number(await getSet("ideas"))) return ideasTopic(ctx);
   const o = await orderByTopic(tid);
   if (o) return orderTopic(ctx, o);
+  if ((ctx.message as any).photo) {
+    return ctx.reply("Здесь фото не обрабатываются. Отправляйте их в тему «Товары». Если тема не привязана, напишите в ней /bind products.");
+  }
 });
 
 /* ============================ планировщик (раз в минуту) ============================ */
