@@ -3,6 +3,8 @@
 import { Bot, Context, InlineKeyboard, InputFile, Keyboard, webhookCallback } from "npm:grammy@1.30.0";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+const VERSION = "v7";
+
 /* ============================ config ============================ */
 const env = (k: string, d = "") => Deno.env.get(k) ?? d;
 const ADMIN_GROUP = Number(env("ADMIN_GROUP_ID"));
@@ -23,11 +25,16 @@ const db = createClient(env("SUPABASE_URL"), env("SUPABASE_SERVICE_ROLE_KEY"), {
 const bot = new Bot(env("BOT_TOKEN"));
 bot.catch(async (e) => {
   console.error("bot error:", e.error);
+  const text = `⚠️ Ошибка: ${String((e.error as any)?.description ?? (e.error as any)?.message ?? e.error).slice(0, 300)}`;
   try {
     if (e.ctx.chat?.id === ADMIN_GROUP) {
-      await e.ctx.reply(`⚠️ Ошибка: ${String((e.error as any)?.message ?? e.error).slice(0, 300)}`);
+      try { await e.ctx.reply(text); } catch (_) { await bot.api.sendMessage(ADMIN_GROUP, text); }
     }
   } catch (_) { /* ignore */ }
+});
+bot.use(async (ctx, next) => {
+  console.log(`update ${ctx.update.update_id} chat=${ctx.chat?.id} text=${(ctx.msg as any)?.text ?? (ctx.callbackQuery as any)?.data ?? "-"}`);
+  await next();
 });
 
 // grammY не добавляет номер темы к ответам сам: без этого ответ уходит в «Общую».
@@ -292,7 +299,7 @@ const menu = (ctx: Context) =>
     reply_markup: new InlineKeyboard().text("📸 Из каталога", "catalog").text("🎨 Свой вариант", "custom"),
   });
 
-bot.command("id", (ctx) => ctx.reply(`chat_id: <code>${ctx.chat.id}</code>`, { parse_mode: "HTML" }));
+bot.command("id", (ctx) => ctx.reply(`chat_id: <code>${ctx.chat.id}</code>\nверсия бота: ${VERSION}`, { parse_mode: "HTML" }));
 
 bot.command("start", async (ctx) => {
   if (ctx.chat.type !== "private") return;
@@ -542,6 +549,7 @@ bot.command("debug", async (ctx) => {
   } catch (e) { ch = `ошибка: ${esc(String((e as any)?.description ?? e))}`; }
   const f = ctx.from!;
   await ctx.reply([
+    `версия бота: ${VERSION}`,
     `chat_id: <code>${ctx.chat.id}</code>`,
     `ADMIN_GROUP_ID в секрете: <code>${ADMIN_GROUP}</code> → ${inAdmin(ctx) ? "совпадает ✅" : "НЕ совпадает ❌"}`,
     `thread_id этой темы: <code>${tidOf(ctx) ?? "нет (общая тема)"}</code>`,
